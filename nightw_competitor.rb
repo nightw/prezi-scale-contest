@@ -49,6 +49,68 @@ if $stdin.tty?
 	exit 1
 end
 
+# Class is for storing and handling VMs
+# Can store creation time and give info about how many minutes left
+# in the current hour. Also stores the queue of the VM
+class Vm
+	# attr_writer for queue attribute with sanity check
+	def queue=(value)
+		@queue = value unless !QUEUES.include?(value)
+	end
+	
+	# The queue attribute can also be read
+	attr_reader :queue
+	# The creation time is only readable, only initialize can set it
+	attr_reader :creation_time
+	
+	def initialize(date=nil, time=nil)
+		if date.nil? || time.nil?
+			raise "Cannot initialize VM without creation time!"
+		end
+		@creation_time = parse_date_and_time(date, time)
+	end
+	
+	# Returns the minutes left for the current hour for decision making
+	# about the VM for stopping before billing period ends
+	def time_left_in_hour(date, time)
+		return 60 - (((parse_date_and_time(date, time) - @creation_time) % 3600) / 60)
+	end
+end
+
+# Processes a date and a time string to split them into year, month,
+# day, hours, minutes, seconds
+#
+# Return Time object from the given date and time Strings
+def parse_date_and_time(date, time)
+	year = month = day = hours = minutes = seconds = nil
+	date.split("-").each_with_index { |part, index|
+		case index
+			when 0
+				year = part
+			when 1
+				month = part
+			when 2
+				day = part
+		end
+	}
+	time.split(":").each_with_index { |part, index|
+		case index
+			when 0
+				hours = part
+			when 1
+				minutes = part
+			when 2
+				seconds = part
+		end
+	}
+	return Time.new(year.to_i, month.to_i, day.to_i, hours.to_i, minutes.to_i, seconds.to_i)
+end
+
+# We set up queue arrays to push VMs into them
+@@export_q = Array.new
+@@url_q = Array.new
+@@general_q = Array.new
+
 # Processes a line string by splitting it to parts to extract the
 # information from it
 #
@@ -81,13 +143,34 @@ def process_line(line)
     return date, time, uid, queue, length
 end
 
-# Prints a VMs start or terminate message to stdin in the needed format
-def puts_queue_command(date, time, command, queue)
-	# We sanity check the queue and the command
-	if !QUEUES.include?(queue) || !['launch', 'terminate'].include?(command)
-		return
+# Starts a VM and prints a the start message to stdout in the needed
+# format
+def start_vm(date, time, queue)
+	# We sanity check the queue
+	if !QUEUES.include?(queue)
+		raise "Invalid queue for starting VM"
 	end
-	puts "#{date} #{time} #{command} #{queue}"
+	vm = Vm.new(date, time)
+	vm.queue = queue
+	eval "@@#{queue}_q.push vm"
+	puts "#{date} #{time} launch #{queue}"
+end
+
+# This stops all the running VMs
+# Most like we only use this when we finished with the input data
+def stop_all_vms(date, time)
+	@@export_q.each do |vm|
+		puts "#{date} #{time} terminate export"
+	end
+	@@export_q = nil
+	@@url_q.each do |vm|
+		puts "#{date} #{time} terminate url"
+	end
+	@@url_q = nil
+	@@general_q.each do |vm|
+		puts "#{date} #{time} terminate general"
+	end
+	@@general_q = nil
 end
 
 # Prints a previously read job from parts back to stdout in the needed
@@ -103,7 +186,7 @@ date, time, uid, queue, length = process_line firstline
 # Now we initialize the proportional part of VMs for every queue
 for i in 1..PROPORTIONAL_NUMBER_OF_VMS
 	for queue in QUEUES
-		puts_queue_command date, time, 'launch', queue
+		start_vm date, time, queue
 	end
 end
 
@@ -121,9 +204,6 @@ ARGF.each do |line|
 	end
 end
 
-# And now we terminate the proportional VMs
-for i in 1..PROPORTIONAL_NUMBER_OF_VMS
-	for queue in QUEUES
-		puts_queue_command date, time, 'terminate', queue
-	end
-end
+# And now we terminate all the VMs, because we finished processing the
+# input
+stop_all_vms(date, time)
