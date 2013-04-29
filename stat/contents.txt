@@ -1,0 +1,10 @@
+This folder contains the following resources:
+ * prezistats.php - Google charts statistics for the first day/hour
+ * prezistats_dhm.php - Google charts statistics for the first week, minute precision.
+    * Warning: You may need to set the memory limit for PHP to run this file.
+ 
+ * prezi_requests.sql - CREATE TABLE for prezi log requests
+ * prezi_upload.php - Inserts the prezi log records from the log files to MySQL/MariaDB.
+    * Note: Building the database with the data of the first week only takes about 3 hours
+	  with i3 and 8Gb of RAM (well, without SSD. :D)
+
