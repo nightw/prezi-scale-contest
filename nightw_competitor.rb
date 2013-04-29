@@ -7,16 +7,27 @@
 # * There are always a (comaparatively low) fixed number of virtual
 #   machines available as an idle pool to process the incoming
 #   requests in the near future
-# * There is also a simple trend analizer for a time windows of the past
-#   hour to try to guess the amount of VMs needed for the 60 minutes
-# * The pool of running VMs is consisted of sum of the above constant
-# number and the predicted need from the trend of last hour
+# * There is a second proportional component which is computed from the
+#   highest spike of the last 24 hours
+# * There are also two distinct trend analizers for a time windows of
+#   the past hour and 24 hours to try to guess the amount of VMs needed
+#   for the next 60 minutes
+# * The pool of running VMs is consisted of sum of the above two
+#   proportional parts and from the predicted number from the shorter
+#   trend analyzed
+# * And another rule is that we only stop VMs when the following
+#   conditions are met:
+#   * The VMs has maximum 5 minutes left for it's current hour
+#   * The short trend of requests is not rising
+#   * The number of the remaining VMs does not fall below the sum of the
+#     two proportional parts
 #
-# Or the shortest summary is that the program tries to implement
-# a classic PD controller which tries to use the queues input to
-# control the number of VMs used.
+# Or the shortest summary is that the program tries to implement 3
+# distinct and a bit tricky PD controller which tries to use the
+# requests data as input to control the output which is the number of
+# VMs running.
 
-# Author::    Pal David Gergely  (mailto:nightw17@gmail.com)
+# Author::    Pal David Gergely  (mailto:nightw17@gmail.com), Andras Ivanyi (mailto:andras.ivanyi@gmail.com)
 # Copyright:: Copyright (c) 2013 Pal David Gergely
 # License::   Apache License, Version 2.0
 
