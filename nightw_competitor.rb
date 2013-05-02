@@ -38,6 +38,11 @@ PROPORTIONAL_NUMBER_OF_VMS = 5
 # The available queues (constant)
 QUEUES = %w[ export url general ]
 
+# We set up queue arrays to push VMs into them
+@@export_q = Array.new
+@@url_q = Array.new
+@@general_q = Array.new
+
 # We check the Ruby version and print a warning if it's not 1.9.x
 if !RUBY_VERSION.start_with?('1.9')
 	$stderr.puts 'WARNING: The code was tested only on Ruby 1.9!!!' 
@@ -77,6 +82,70 @@ class Vm
 	end
 end
 
+# This is the trend analyzer
+# It stores *per queue* the sum of incoming request for every minute
+# for the last 24 hours
+class Trend
+	# That is the time window in minutes to store data for
+	MINUTES_TO_STORE = 60 * 24
+
+	def initialize(date=nil, time=nil)
+		if date.nil? || time.nil?
+			raise "Cannot initialize Trend class without creation time!"
+		end
+		@starttime = parse_date_and_time(date, time)
+		@reqs_sum = Hash.new
+		@reqs_num = Hash.new
+		@last_shift = Hash.new
+		# We initialize the Hash variables to defaults
+		QUEUES.each do |queue|
+			@last_shift[queue] = MINUTES_TO_STORE - 1
+			@reqs_sum[queue] = Array.new
+			@reqs_num[queue] = Array.new
+		end
+	end
+	
+	def add_req(date, time, queue, length)
+		# We sanity check the queue
+		if !QUEUES.include?(queue)
+			raise "Invalid queue for adding request!"
+		end
+		number_of_minutes_since_start = ((parse_date_and_time(date, time) - @starttime) / 60.to_f).to_i
+		if number_of_minutes_since_start < MINUTES_TO_STORE
+			# We're within the first day, so we just add our value to the array
+			if @reqs_sum[queue][number_of_minutes_since_start].nil?
+				@reqs_sum[queue][number_of_minutes_since_start] = length.to_f
+				@reqs_num[queue][number_of_minutes_since_start] = 1
+			else
+				@reqs_sum[queue][number_of_minutes_since_start] += length.to_f
+				@reqs_num[queue][number_of_minutes_since_start] = @reqs_num[queue][number_of_minutes_since_start] + 1
+			end
+			#puts "#{queue}: #{number_of_minutes_since_start}th min, #{@reqs_num[queue][number_of_minutes_since_start]} pc, #{@reqs_sum[queue][number_of_minutes_since_start]} sum length"
+		else
+			# we are over a 24 hour period, so we only write the last
+			# element and shift the array when the minute changes
+			if @last_shift[queue] < number_of_minutes_since_start
+				@reqs_sum[queue].shift(number_of_minutes_since_start - @last_shift[queue])
+				@reqs_sum[queue][MINUTES_TO_STORE - 1] = length.to_f
+				@reqs_num[queue][MINUTES_TO_STORE - 1] = 1
+				@last_shift[queue] = number_of_minutes_since_start
+			else
+				@reqs_sum[queue][MINUTES_TO_STORE - 1] += length.to_f
+				@reqs_num[queue][MINUTES_TO_STORE - 1] = @reqs_num[queue][MINUTES_TO_STORE - 1] + 1
+			end
+			#puts "#{queue}: #{MINUTES_TO_STORE - 1}th min, #{@reqs_num[queue][MINUTES_TO_STORE - 1]} pc, #{@reqs_sum[queue][MINUTES_TO_STORE - 1]} sum length"
+		end
+	end
+	
+	def dump_info		
+		@reqs_sum.each do |req_sum_name, req_sum_value|
+			req_sum_value.each_with_index do |sum_length, index|
+				puts "#{req_sum_name}: #{index}: #{@reqs_num[req_sum_name][index]} pc, #{sum_length} sum length"
+			end
+		end
+	end
+end
+
 # Processes a date and a time string to split them into year, month,
 # day, hours, minutes, seconds
 #
@@ -105,11 +174,6 @@ def parse_date_and_time(date, time)
 	}
 	return Time.new(year.to_i, month.to_i, day.to_i, hours.to_i, minutes.to_i, seconds.to_i)
 end
-
-# We set up queue arrays to push VMs into them
-@@export_q = Array.new
-@@url_q = Array.new
-@@general_q = Array.new
 
 # Processes a line string by splitting it to parts to extract the
 # information from it
@@ -190,6 +254,10 @@ for i in 1..PROPORTIONAL_NUMBER_OF_VMS
 	end
 end
 
+# Now we initialize the Trend class
+@@trend = Trend.new(date, time)
+@@trend.add_req(date, time, queue, length)
+
 # Now we print the first line
 puts_job_back_to_stdout date, time, uid, queue, length
 
@@ -197,6 +265,7 @@ puts_job_back_to_stdout date, time, uid, queue, length
 ARGF.each do |line|
 	date, time, uid, queue, length = process_line line
 	begin
+		@@trend.add_req(date, time, queue, length)
 		puts_job_back_to_stdout date, time, uid, queue, length
 		$stdout.flush
     rescue Errno::EPIPE
@@ -207,3 +276,7 @@ end
 # And now we terminate all the VMs, because we finished processing the
 # input
 stop_all_vms(date, time)
+
+#@@trend.dump_info
+
+
