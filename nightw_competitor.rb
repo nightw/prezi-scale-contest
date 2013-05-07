@@ -93,7 +93,7 @@ class Trend
 		if date.nil? || time.nil?
 			raise "Cannot initialize Trend class without creation time!"
 		end
-		@starttime = parse_date_and_time(date, time)
+		@last_req = @starttime = parse_date_and_time(date, time)
 		@reqs_sum = Hash.new
 		@reqs_num = Hash.new
 		@last_shift = Hash.new
@@ -110,7 +110,12 @@ class Trend
 		if !QUEUES.include?(queue)
 			raise "Invalid queue for adding request!"
 		end
-		number_of_minutes_since_start = ((parse_date_and_time(date, time) - @starttime) / 60.to_f).to_i
+		datetime = parse_date_and_time(date, time)
+		# We sanity check the time diff since the last request
+		if datetime - @last_req > 60*30
+			$stderr.puts "Input data inconsistency: Last request and current request has was more the 30 minutes difference!"
+		end
+		number_of_minutes_since_start = ((datetime - @starttime) / 60.to_f).to_i
 		if number_of_minutes_since_start < MINUTES_TO_STORE
 			# We're within the first day, so we just add our value to the array
 			if @reqs_sum[queue][number_of_minutes_since_start].nil?
@@ -135,6 +140,7 @@ class Trend
 			end
 			#puts "#{queue}: #{MINUTES_TO_STORE - 1}th min, #{@reqs_num[queue][MINUTES_TO_STORE - 1]} pc, #{@reqs_sum[queue][MINUTES_TO_STORE - 1]} sum length"
 		end
+		@last_req = datetime
 	end
 	
 	def dump_info		
@@ -143,6 +149,37 @@ class Trend
 				puts "#{req_sum_name}: #{index}: #{@reqs_num[req_sum_name][index]} pc, #{sum_length} sum length"
 			end
 		end
+	end
+	
+	# This function computes the trend of the last 5 mintes by queue
+	# The trend in this case is a number which corresponds to the
+	# growing or shrinking of incoming request
+	def short_trend(queue)
+		if @reqs_sum[queue].length - 5 < 1
+			return 0
+		end
+		last_five_mins_sum = @reqs_sum[queue].drop(@reqs_sum[queue].length - 5)
+		last_five_mins_sum.compact!
+		diffs = Array.new
+		for i in 0..(last_five_mins_sum.length - 2) do
+			diffs[i] = last_five_mins_sum[i + 1] - last_five_mins_sum[i]
+		end
+		# We also need the second level diffs
+		diffs2 = Array.new
+		for i in 0..(diffs.length - 2) do
+			diffs2[i] = diffs[i + 1] - diffs[i]
+		end
+		# And we need these diffs in a single number
+		sum_diff = 0
+		diffs.each do |diff|
+			sum_diff += diff
+		end
+		diffs2.each do |diff2|
+			# And we need the second level diff (acceleration) with more
+			# weight
+			sum_diff += diff2 * 2
+		end
+		return sum_diff
 	end
 end
 
@@ -220,6 +257,11 @@ def start_vm(date, time, queue)
 	puts "#{date} #{time} launch #{queue}"
 end
 
+# Retruns the number of VMs running for the given queue
+def vm_pool_size(queue)
+	return eval "@@#{queue}_q.count"
+end
+
 # This stops all the running VMs
 # Most like we only use this when we finished with the input data
 def stop_all_vms(date, time)
@@ -247,6 +289,10 @@ end
 firstline = ARGF.readline
 date, time, uid, queue, length = process_line firstline 
 
+# This will be used to detect the last _minute_ when we adjusted the
+# number of VMs because of the short trend
+@@last_minute_when_trend_was_adjusted = time.split(":").drop(1).join(":")
+
 # Now we initialize the proportional part of VMs for every queue
 for i in 1..PROPORTIONAL_NUMBER_OF_VMS
 	for queue in QUEUES
@@ -267,6 +313,18 @@ ARGF.each do |line|
 	begin
 		@@trend.add_req(date, time, queue, length)
 		puts_job_back_to_stdout date, time, uid, queue, length
+		# When we're over the 50th second of a minute AND
+		# we have not adjusted the trend in this minute yet AND
+		# the trend is rising
+		if	time.split(":")[2].start_with?('5') &&
+			@@last_minute_when_trend_was_adjusted != time.split(":")[0..1].join(":") &&
+			@@trend.short_trend(queue) > 0
+				number_of_vms_to_start = (@@trend.short_trend(queue) / 5 / 60.to_f).ceil
+				number_of_vms_to_start.times do
+					start_vm(date, time, queue)
+				end
+				@@last_minute_when_trend_was_adjusted = time.split(":")[0..1].join(":")
+		end
 		$stdout.flush
     rescue Errno::EPIPE
 		break
