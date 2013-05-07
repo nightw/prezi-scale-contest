@@ -80,6 +80,11 @@ class Vm
 	def time_left_in_hour(date, time)
 		return 60 - (((parse_date_and_time(date, time) - @creation_time) % 3600) / 60)
 	end
+	
+	def stop(date, time)
+		eval "@@#{@queue}_q.delete self"
+		puts "#{date} #{time} terminate #{@queue}"
+	end
 end
 
 # This is the trend analyzer
@@ -105,7 +110,7 @@ class Trend
 		end
 	end
 	
-	def add_req(date, time, queue, length)
+	def add_req(date, time, queue, length, uid)
 		# We sanity check the queue
 		if !QUEUES.include?(queue)
 			raise "Invalid queue for adding request!"
@@ -113,7 +118,8 @@ class Trend
 		datetime = parse_date_and_time(date, time)
 		# We sanity check the time diff since the last request
 		if datetime - @last_req > 60*30
-			$stderr.puts "Input data inconsistency: Last request and current request has was more the 30 minutes difference!"
+			$stderr.puts "Input data inconsistency: Last request and current request has was more the 30 minutes difference around uid: #{uid}"
+			return
 		end
 		number_of_minutes_since_start = ((datetime - @starttime) / 60.to_f).to_i
 		if number_of_minutes_since_start < MINUTES_TO_STORE
@@ -180,6 +186,29 @@ class Trend
 			sum_diff += diff2 * 2
 		end
 		return sum_diff
+	end
+	
+	# This function computes the trend of the last 24 hours and gives
+	# back the biggest spike of 4 minute windows in those hours in one
+	# Fixnum
+	def long_trend(queue)
+		# If we're in the first 12 hours then we do nothing
+		if @reqs_sum[queue].length  < 12 * 60
+			return 0
+		end
+		reqs_sum_without_nils = @reqs_sum[queue].compact
+		biggest_need_in_4_mins = reqs_sum_without_nils[0] +
+			reqs_sum_without_nils[1] +
+			reqs_sum_without_nils[2] +
+			reqs_sum_without_nils[3]
+		for i in 4..(reqs_sum_without_nils.length - 4)
+			current_sum =	reqs_sum_without_nils[i] + reqs_sum_without_nils[i + 1] +
+							reqs_sum_without_nils[i + 2] + reqs_sum_without_nils[i + 3]
+			if current_sum > biggest_need_in_4_mins
+				biggest_need_in_4_mins = current_sum
+			end
+		end
+		return biggest_need_in_4_mins
 	end
 end
 
@@ -262,6 +291,11 @@ def vm_pool_size(queue)
 	return eval "@@#{queue}_q.count"
 end
 
+# Retruns the VMs pool itself for a given queue
+def vm_pool(queue)
+	return eval "@@#{queue}_q"
+end
+
 # This stops all the running VMs
 # Most like we only use this when we finished with the input data
 def stop_all_vms(date, time)
@@ -302,16 +336,16 @@ end
 
 # Now we initialize the Trend class
 @@trend = Trend.new(date, time)
-@@trend.add_req(date, time, queue, length)
+@@trend.add_req(date, time, queue, length, uid)
 
 # Now we print the first line
 puts_job_back_to_stdout date, time, uid, queue, length
 
 # Now we process the reamining lines line by line
-ARGF.each do |line|
+ARGF.each_with_index do |line, index|
 	date, time, uid, queue, length = process_line line
 	begin
-		@@trend.add_req(date, time, queue, length)
+		@@trend.add_req(date, time, queue, length, uid)
 		puts_job_back_to_stdout date, time, uid, queue, length
 		# When we're over the 50th second of a minute AND
 		# we have not adjusted the trend in this minute yet AND
@@ -325,9 +359,26 @@ ARGF.each do |line|
 				end
 				@@last_minute_when_trend_was_adjusted = time.split(":")[0..1].join(":")
 		end
+		# We check that if moderately many request has gone that what is
+		# the long trend and we stop VMs when they're not needed
+		if index % 1000 == 0
+			QUEUES.each do |curr_queue|
+				long_trend_for_q = @@trend.long_trend(curr_queue)
+				pool_size = vm_pool_size(curr_queue)
+#				$stderr.puts "#{date} #{time} #{curr_queue} queue size is: #{pool_size}"
+				if long_trend_for_q != 0 && long_trend_for_q < pool_size * 60
+					vm_pool(curr_queue).each do |vm|
+						if ((vm_pool_size(curr_queue) - PROPORTIONAL_NUMBER_OF_VMS - 1) * 60) > long_trend_for_q
+							vm.stop(date, time)
+						end
+					end
+				end
+			end
+		end
 		$stdout.flush
     rescue Errno::EPIPE
-		break
+#		$stderr.puts "#{date} #{time}"
+		exit 1
 	end
 end
 
