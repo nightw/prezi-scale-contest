@@ -20,8 +20,6 @@
 # * adjusting the VM pool size for queue in a good way (possibly only
 #   when a request comes in for the given queue in schedule_job() function)
 # * logging to file for Andy's graphical interface to use
-# * raise and exit when we have no resource left (5 sec rule, after 24
-#   hours only)
 # * The biggest spike in the near past should be stored some way to
 #   be able to dinamically compute the number of idle VMs needed at all
 #   times
@@ -97,6 +95,11 @@ class Job
 			return false
 		end
 	end
+	
+	# This function return the time when the request will be finished
+	def finishes_at()
+		return @start_time + length.to_f
+	end
 end
 
 # Class for managing running VMs for queues
@@ -104,6 +107,7 @@ class QueueManager
 	# We initilize the variables and also start the fixed number of VMs
 	# for every queue. The date and time parameter is mandatory
 	def initialize(date, time)
+		@start_date_time = parse_date_and_time(date, time)
 		@queues = Hash.new
 		QUEUES.each do |q|
 			@queues[q] = Array.new
@@ -180,11 +184,33 @@ class QueueManager
 	# It's input parameter is a Job object
 	def schedule_request(job)
 		if job..kind_of?(Job)
+			found = false
 			@queues[job.queue].each do |vm|
 				if vm.free?(job.date, job.time)
 					job.start_time = parse_date_and_time(job.date, job.time)
 					vm.job = job
+					found = true
+					break
 				end
+			end
+			# We did not found a currently free VM, so we try to "wait"
+			# for the 5 sec grace period
+			if !found
+				@queues[job.queue].each do |vm|
+					if vm.free_at(job.date, job.time) < parse_date_and_time(job.date, job.time) + 5
+						job.start_time = vm.free_at(job.date, job.time)
+						vm.job = job
+						found = true
+#						$stderr.puts "WARNING: job #{job.uid} sheduled into the future to: #{vm.free_at(job.date, job.time)}"
+						break
+					end
+				end
+			end
+			# We did not found any VM even with 5 secs "wait" and we're
+			# over the first 24 hours when there is no penalty for being 
+			# unable to schedule a job correctly
+			if !found && parse_date_and_time(job.date, job.time) > @start_date_time + 24 * 60 * 60
+				raise "There was no available VM for the request: #{job.uid}"
 			end
 			# TODO: adjust the pool size if needed
 		else
@@ -249,6 +275,22 @@ class Vm
 			end
 		else
 			return true
+		end
+	end
+	
+	# Returns the time when the VM will be available to run jobs. If the
+	# VM is not running any jobs, then it returns the input date and
+	# time
+	def free_at(date, time)
+		if !@job.nil?
+			if @job.running?(date, time)
+				return @job.finishes_at
+			else
+				@job = nil
+				return parse_date_and_time(date, time)
+			end
+		else
+			return parse_date_and_time(date, time)
 		end
 	end
 end
