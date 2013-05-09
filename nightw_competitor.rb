@@ -13,6 +13,19 @@
 # Copyright:: Copyright (c) 2013 Pal David Gergely
 # License::   Apache License, Version 2.0
 
+# TODO list
+# * 2 minutes start time support (possibly in free() function)
+# * accounting the free VMs in every queue "statically" (not counting it
+#   when the function is called to get the value)
+# * adjusting the VM pool size for queue in a good way (possibly only
+#   when a request comes in for the given queue in schedule_job() function)
+# * logging to file for Andy's graphical interface to use
+# * raise and exit when we have no resource left (5 sec rule, after 24
+#   hours only)
+# * The biggest spike in the near past should be stored some way to
+#   be able to dinamically compute the number of idle VMs needed at all
+#   times
+
 # This is the number of VMs in every queue we always want to run as
 # idle to handle possible incoming spikes
 FIX_NUMBER_OF_VMS = 5
@@ -77,8 +90,8 @@ class Job
 	end
 	
 	# This function tells that the job is running currently or not
-	def running?()
-		if !@start_time.nil? && Time.new - (@start_time + length.to_f) < 0
+	def running?(date, time)
+		if !@start_time.nil? && parse_date_and_time(date, time) - (@start_time + length.to_f) < 0
 			return true
 		else
 			return false
@@ -168,8 +181,8 @@ class QueueManager
 	def schedule_request(job)
 		if job..kind_of?(Job)
 			@queues[job.queue].each do |vm|
-				if vm.free?
-					job.start_time = Time.new
+				if vm.free?(job.date, job.time)
+					job.start_time = parse_date_and_time(job.date, job.time)
 					vm.job = job
 				end
 			end
@@ -226,9 +239,9 @@ class Vm
 	
 	# Returns true is the VM currently is running no jobs OR a previous
 	# job has been finished
-	def free?()
+	def free?(date, time)
 		if !@job.nil?
-			if @job.running?
+			if @job.running?(date, time)
 				return false
 			else
 				@job = nil
