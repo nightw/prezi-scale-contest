@@ -16,11 +16,14 @@
 # TODO list
 # * accounting the free VMs in every queue "statically" (not counting it
 #   when the function is called to get the value)
-# * logging to file for Andy's graphical interface to use
 # * The biggest spike in the near past should be stored some way to
 #   be able to dinamically compute the number of idle VMs needed at all
 #   times
 # * Optimize the code a LOT, because it's dead slow now :)
+
+########################################################################
+###################################### Constants #######################
+########################################################################
 
 # This is the number of VMs in every queue we always want to run as
 # idle to handle possible incoming spikes
@@ -32,6 +35,10 @@ VM_START_TIME = 2 * 60
 # The available queues (constant)
 QUEUES = %w[ export url general ]
 
+########################################################################
+###################################### Checks at start time ############
+########################################################################
+
 # We check the Ruby version and print a warning if it's not 1.9.x
 if !RUBY_VERSION.start_with?('1.9')
 	$stderr.puts 'WARNING: The code was tested only on Ruby 1.9!!!' 
@@ -42,6 +49,10 @@ if $stdin.tty?
 	puts 'There were no input from stdin!'
 	exit 1
 end
+
+########################################################################
+###################################### Classes #########################
+########################################################################
 
 # This class represents a Job with all of available information form
 # input and also some computed information. These are the following:
@@ -185,16 +196,16 @@ class QueueManager
 	# That means assigning it to a VM and adjusting the job's VM pool
 	# size if neccesary
 	# It's input paramaters are a job's parts in string format
-	def schedule_request_with_parts(date, time, uid, queue, length)
+	def schedule_request_with_parts(date, time, uid, queue, length, write_log=false, log_file=nil)
 		job = Job.new(date, time, uid, queue, length)
-		schedule_request(job)
+		schedule_request(job, write_log, log_file)
 	end
 	
 	# This function is for scheduling an incoming request
 	# That means assigning it to a VM and adjusting the job's VM pool
 	# size if neccesary
 	# It's input parameter is a Job object
-	def schedule_request(job)
+	def schedule_request(job, write_log=false, log_file=nil)
 		if job..kind_of?(Job)
 			found = false
 			@queues[job.queue].each do |vm|
@@ -233,7 +244,7 @@ class QueueManager
 				free_vms_without_start_time += 1 if vm.free?(job.date, job.time, true)
 				real_free_vms += 1 if vm.free?(job.date, job.time)
 			end
-#			$stderr.puts "There is #{free_vms_without_start_time}/#{real_free_vms}/#{@queues[job.queue].size} VMs free in #{job.queue}"
+#			$stderr.puts "There is #{free_vms_without_start_time}/#{real_free_vms}/#{@queues[job.queue].size} VMs free in #{job.queue} (before VM pool management)"
 			if free_vms_without_start_time.to_f / @queues[job.queue].size < 0.3
 				# Now we start VMs to be at least 30 percent of free VMs
 				(@queues[job.queue].size * 0.3 - free_vms_without_start_time).to_i.times do
@@ -245,6 +256,9 @@ class QueueManager
 				(free_vms_without_start_time - @queues[job.queue].size * 0.7).to_i.times do
 					stop_vm(job.date, job.time, job.queue)
 				end
+			end
+			if write_log
+				@@log_file.puts "#{job.date} #{job.time} #{job.queue} #{@queues[job.queue].length} #{real_free_vms} #{(@queues[job.queue].size * 0.3).to_i}"
 			end
 		else
 			raise "Job type was needed and got #{job.inspect}"
@@ -340,6 +354,10 @@ class Vm
 	end
 end
 
+########################################################################
+###################################### Utility functions ###############
+########################################################################
+
 # Processes a date and a time string to split them into year, month,
 # day, hours, minutes, seconds
 #
@@ -413,6 +431,18 @@ def puts_job_back_to_stdout(job)
 	puts "#{job.date} #{job.time} #{job.uid} #{job.queue} #{job.length}"
 end
 
+########################################################################
+###################################### Main program ####################
+########################################################################
+
+# We check that we have given a log file in the command line or not
+if ARGV.length > 0
+	@@log_file = File.open(ARGV[0], 'w')
+	ARGV.shift
+else
+	@@log_file = nil
+end
+
 # We read the first line and process it first to get the start date
 firstline = ARGF.readline
 date, time, uid, queue, length = process_line firstline 
@@ -430,15 +460,25 @@ puts_job_back_to_stdout_from_parts date, time, uid, queue, length
 ARGF.each_with_index do |line, index|
 	date, time, uid, queue, length = process_line line
 	begin
-		# Now we process the job
-		@@queue_manager.schedule_request_with_parts(date, time, uid, queue, length)
-		# And lastly we print back the job to the stdout
+		# Now we process the job (with logging information wirte if a
+		# log file was given in the command line arguments
+		if !@@log_file.nil?
+			@@queue_manager.schedule_request_with_parts(date, time, uid, queue, length, true, @@log_file)
+		else
+			@@queue_manager.schedule_request_with_parts(date, time, uid, queue, length)
+		end
 		puts_job_back_to_stdout_from_parts date, time, uid, queue, length
 		$stdout.flush
     rescue Errno::EPIPE
 #		$stderr.puts "#{date} #{time}"
+		if !@@log_file.nil?
+			@@log_file.close
+		end
 		exit 1
 	rescue SignalException
+		if !@@log_file.nil?
+			@@log_file.close
+		end
 		exit 0
 	end
 end
@@ -446,3 +486,7 @@ end
 # And now we terminate all the VMs, because we finished processing the
 # input
 @@queue_manager.stop_all_vms(date, time)
+
+if !@@log_file.nil?
+	@@log_file.close
+end
