@@ -16,8 +16,6 @@
 # TODO list
 # * accounting the free VMs in every queue "statically" (not counting it
 #   when the function is called to get the value)
-# * adjusting the VM pool size for queue in a good way (possibly only
-#   when a request comes in for the given queue in schedule_job() function)
 # * logging to file for Andy's graphical interface to use
 # * The biggest spike in the near past should be stored some way to
 #   be able to dinamically compute the number of idle VMs needed at all
@@ -132,7 +130,7 @@ class QueueManager
 	end
 	
 	# To stop a VM in a given queue
-	def stop_vm(date, time, queue)
+	def stop_vm(date, time, queue, force_stop = false)
 		# First sanity check
 		if QUEUES.include?(queue)
 			# We look for the VMs which has the least mintues left in the
@@ -144,16 +142,27 @@ class QueueManager
 			if @queues[queue].length - 1 <= FIX_NUMBER_OF_VMS
 				return
 			end
+			current_time_left = nil
 			@queues[queue].each do |vm|
-				current_time_left = vm.min_minutes_left_in_hour(date, time)
+				current_time_left = vm.time_left_in_hour(date, time)
 				if current_time_left < min_minutes_left_in_hour
 					min_minutes_left_in_hour = current_time_left
 					vm_to_stop = vm
 				end
 			end
 			if !vm_to_stop.nil?
-				vm_to_stop.stop(date, time)
-				@queues[queue].delete(vm_to_stop)
+				if force_stop
+					vm_to_stop.stop(date, time)
+					@queues[queue].delete(vm_to_stop)
+				else
+					# If we do not have to force stop then we won't stop
+					# a VM which has more than 5 mintes left in the hour
+					# because it's "cheaper" to leave it powered on
+					if current_time_left < 5
+						vm_to_stop.stop(date, time)
+						@queues[queue].delete(vm_to_stop)
+					end
+				end
 			end
 		else
 			raise "Invalid queue: #{queue}"
@@ -218,7 +227,24 @@ class QueueManager
 #					$stderr.puts "WARNING: there is no free VM for job #{job.uid} at: #{job.date} #{job.time} (but we're in the first 24 hours)"
 				end
 			end
-			# TODO: adjust the pool size if needed
+			real_free_vms = free_vms_without_start_time = 0
+			@queues[job.queue].each do |vm|
+				free_vms_without_start_time += 1 if vm.free?(job.date, job.time, true)
+				real_free_vms += 1 if vm.free?(job.date, job.time)
+			end
+#			$stderr.puts "There is #{free_vms_without_start_time}/#{real_free_vms}/#{@queues[job.queue].size} VMs free in #{job.queue}"
+			if free_vms_without_start_time.to_f / @queues[job.queue].size < 0.3
+				# Now we start VMs to be at least 30 percent of free VMs
+				(@queues[job.queue].size * 0.3 - free_vms_without_start_time).to_i.times do
+					start_vm(job.date, job.time, job.queue)
+				end
+			end
+			if free_vms_without_start_time.to_f / @queues[job.queue].size > 0.7
+				# Now we stop VMs to rise the utilization to 30 percent
+				(free_vms_without_start_time - @queues[job.queue].size * 0.7).to_i.times do
+					stop_vm(job.date, job.time, job.queue)
+				end
+			end
 		else
 			raise "Job type was needed and got #{job.inspect}"
 		end
@@ -271,7 +297,7 @@ class Vm
 	
 	# Returns true is the VM currently is running no jobs OR a previous
 	# job has been finished
-	def free?(date, time)
+	def free?(date, time, ignore_start_time=false)
 		if !@job.nil?
 			if @job.running?(date, time)
 				return false
@@ -280,11 +306,16 @@ class Vm
 				return true
 			end
 		else
-			# only free if the VM has been started since creation
-			if parse_date_and_time(date, time) > @creation_time + VM_START_TIME
+			# if we ignore start_time then we're free
+			if ignore_start_time
 				return true
 			else
-				return false
+				# only free if the VM has been started since creation
+				if parse_date_and_time(date, time) > @creation_time + VM_START_TIME
+					return true
+				else
+					return false
+				end
 			end
 		end
 	end
