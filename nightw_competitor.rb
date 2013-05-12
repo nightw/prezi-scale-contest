@@ -14,7 +14,6 @@
 # License::   Apache License, Version 2.0
 
 # TODO list
-# * 2 minutes start time support (possibly in free() function)
 # * accounting the free VMs in every queue "statically" (not counting it
 #   when the function is called to get the value)
 # * adjusting the VM pool size for queue in a good way (possibly only
@@ -27,6 +26,9 @@
 # This is the number of VMs in every queue we always want to run as
 # idle to handle possible incoming spikes
 FIX_NUMBER_OF_VMS = 5
+
+# This is the time needed for a VM to start in seconds
+VM_START_TIME = 2 * 60
 
 # The available queues (constant)
 QUEUES = %w[ export url general ]
@@ -274,7 +276,12 @@ class Vm
 				return true
 			end
 		else
-			return true
+			# only free if the VM has been started since creation
+			if parse_date_and_time(date, time) > @creation_time + VM_START_TIME
+				return true
+			else
+				return false
+			end
 		end
 	end
 	
@@ -290,7 +297,9 @@ class Vm
 				return parse_date_and_time(date, time)
 			end
 		else
-			return parse_date_and_time(date, time)
+			# We return the bigger from the current time and the
+			# creation time plus start time
+			return [parse_date_and_time(date, time), @creation_time + VM_START_TIME].max
 		end
 	end
 end
