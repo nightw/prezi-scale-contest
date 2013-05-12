@@ -211,8 +211,12 @@ class QueueManager
 			# We did not found any VM even with 5 secs "wait" and we're
 			# over the first 24 hours when there is no penalty for being 
 			# unable to schedule a job correctly
-			if !found && parse_date_and_time(job.date, job.time) > @start_date_time + 24 * 60 * 60
-				raise "There was no available VM for the request: #{job.uid}"
+			if !found
+				if parse_date_and_time(job.date, job.time) > @start_date_time + 24 * 60 * 60
+					raise "There was no available VM for the request: #{job.uid}"
+				else
+#					$stderr.puts "WARNING: there is no free VM for job #{job.uid} at: #{job.date} #{job.time} (but we're in the first 24 hours)"
+				end
 			end
 			# TODO: adjust the pool size if needed
 		else
