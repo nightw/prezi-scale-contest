@@ -20,6 +20,7 @@
 # * The biggest spike in the near past should be stored some way to
 #   be able to dinamically compute the number of idle VMs needed at all
 #   times
+# * Optimize the code a LOT, because it's dead slow now :)
 
 # This is the number of VMs in every queue we always want to run as
 # idle to handle possible incoming spikes
@@ -437,6 +438,8 @@ ARGF.each_with_index do |line, index|
     rescue Errno::EPIPE
 #		$stderr.puts "#{date} #{time}"
 		exit 1
+	rescue SignalException
+		exit 0
 	end
 end
 
