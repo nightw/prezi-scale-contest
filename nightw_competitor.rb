@@ -101,7 +101,12 @@ class Job
 	
 	# This function tells that the job is running currently or not
 	def running?(date, time)
-		if !@start_time.nil? && parse_date_and_time(date, time) - (@start_time + length.to_f) < 0
+		return running_date_time?(parse_date_and_time(date, time))
+	end
+	
+	# This function tells that the job is running currently or not
+	def running_date_time?(date_time)
+		if !@start_time.nil? && date_time - (@start_time + length.to_f) < 0
 			return true
 		else
 			return false
@@ -142,7 +147,7 @@ class QueueManager
 	end
 	
 	# To stop a VM in a given queue
-	def stop_vm(date, time, queue, force_stop = false)
+	def stop_vm_date_time(date_time, queue, force_stop = false)
 		# First sanity check
 		if QUEUES.include?(queue)
 			# We look for the VMs which has the least mintues left in the
@@ -156,7 +161,7 @@ class QueueManager
 			end
 			current_time_left = nil
 			@queues[queue].each do |vm|
-				current_time_left = vm.time_left_in_hour(date, time)
+				current_time_left = vm.time_left_in_hour_date_time(date_time)
 				if current_time_left < min_minutes_left_in_hour
 					min_minutes_left_in_hour = current_time_left
 					vm_to_stop = vm
@@ -164,14 +169,14 @@ class QueueManager
 			end
 			if !vm_to_stop.nil?
 				if force_stop
-					vm_to_stop.stop(date, time)
+					vm_to_stop.stop(date_time.strftime("%Y-%m-%d"), date_time.strftime("%H:%M:%S"))
 					@queues[queue].delete(vm_to_stop)
 				else
 					# If we do not have to force stop then we won't stop
 					# a VM which has more than 5 mintes left in the hour
 					# because it's "cheaper" to leave it powered on
 					if current_time_left < 5
-						vm_to_stop.stop(date, time)
+						vm_to_stop.stop(date_time.strftime("%Y-%m-%d"), date_time.strftime("%H:%M:%S"))
 						@queues[queue].delete(vm_to_stop)
 					end
 				end
@@ -179,6 +184,11 @@ class QueueManager
 		else
 			raise "Invalid queue: #{queue}"
 		end
+	end
+	
+	# To stop a VM in a given queue
+	def stop_vm(date, time, queue, force_stop = false)
+		stop_vm_date_time(parse_date_and_time(date, time), queue, force_stop)
 	end
 	
 	# To stop all the VMs in every queue
@@ -209,8 +219,8 @@ class QueueManager
 		if job..kind_of?(Job)
 			found = false
 			@queues[job.queue].each do |vm|
-				if vm.free?(job.date, job.time)
-					job.start_time = parse_date_and_time(job.date, job.time)
+				if vm.free_date_time?(job.date_time)
+					job.start_time = job.date_time
 					vm.job = job
 					found = true
 					break
@@ -220,11 +230,11 @@ class QueueManager
 			# for the 5 sec grace period
 			if !found
 				@queues[job.queue].each do |vm|
-					if vm.free_at(job.date, job.time) < parse_date_and_time(job.date, job.time) + 5
-						job.start_time = vm.free_at(job.date, job.time)
+					if vm.free_at_date_time(job.date_time) < job.date_time + 5
+						job.start_time = vm.free_at_date_time(job.date_time)
 						vm.job = job
 						found = true
-#						$stderr.puts "WARNING: job #{job.uid} sheduled into the future to: #{vm.free_at(job.date, job.time)}"
+#						$stderr.puts "WARNING: job #{job.uid} sheduled into the future to: #{vm.free_at_date_time(job.date_time)}"
 						break
 					end
 				end
@@ -233,7 +243,7 @@ class QueueManager
 			# over the first 24 hours when there is no penalty for being 
 			# unable to schedule a job correctly
 			if !found
-				if parse_date_and_time(job.date, job.time) > @start_date_time + 24 * 60 * 60
+				if job.date_time > @start_date_time + 24 * 60 * 60
 					raise "There was no available VM for the request: #{job.uid}"
 				else
 #					$stderr.puts "WARNING: there is no free VM for job #{job.uid} at: #{job.date} #{job.time} (but we're in the first 24 hours)"
@@ -241,8 +251,8 @@ class QueueManager
 			end
 			real_free_vms = free_vms_without_start_time = 0
 			@queues[job.queue].each do |vm|
-				free_vms_without_start_time += 1 if vm.free?(job.date, job.time, true)
-				real_free_vms += 1 if vm.free?(job.date, job.time)
+				free_vms_without_start_time += 1 if vm.free_date_time?(job.date_time, true)
+				real_free_vms += 1 if vm.free_date_time?(job.date_time)
 			end
 #			$stderr.puts "There is #{free_vms_without_start_time}/#{real_free_vms}/#{@queues[job.queue].size} VMs free in #{job.queue} (before VM pool management)"
 			if free_vms_without_start_time.to_f / @queues[job.queue].size < 0.3
@@ -297,7 +307,13 @@ class Vm
 	# Returns the minutes left for the current hour for decision making
 	# about the VM for stopping before billing period ends
 	def time_left_in_hour(date, time)
-		return 60 - (((parse_date_and_time(date, time) - @creation_time) % 3600) / 60)
+		return time_left_in_hour_date_time(parse_date_and_time(date, time))
+	end
+	
+	# Returns the minutes left for the current hour for decision making
+	# about the VM for stopping before billing period ends
+	def time_left_in_hour_date_time(date_time)
+		return 60 - (((date_time - @creation_time) % 3600) / 60)
 	end
 	
 	# Write out that the VM has been stopped
@@ -313,8 +329,14 @@ class Vm
 	# Returns true is the VM currently is running no jobs OR a previous
 	# job has been finished
 	def free?(date, time, ignore_start_time=false)
+		return free_date_time?(parse_date_and_time(date, time), ignore_start_time)
+	end
+	
+	# Returns true is the VM currently is running no jobs OR a previous
+	# job has been finished
+	def free_date_time?(date_time, ignore_start_time=false)
 		if !@job.nil?
-			if @job.running?(date, time)
+			if @job.running_date_time?(date_time)
 				return false
 			else
 				@job = nil
@@ -326,7 +348,7 @@ class Vm
 				return true
 			else
 				# only free if the VM has been started since creation
-				if parse_date_and_time(date, time) > @creation_time + VM_START_TIME
+				if date_time > @creation_time + VM_START_TIME
 					return true
 				else
 					return false
@@ -339,17 +361,24 @@ class Vm
 	# VM is not running any jobs, then it returns the input date and
 	# time
 	def free_at(date, time)
+		return free_at_date_time(parse_date_and_time(date, time))
+	end
+	
+	# Returns the time when the VM will be available to run jobs. If the
+	# VM is not running any jobs, then it returns the input date and
+	# time
+	def free_at_date_time(date_time)
 		if !@job.nil?
-			if @job.running?(date, time)
+			if @job.running_date_time?(date_time)
 				return @job.finishes_at
 			else
 				@job = nil
-				return parse_date_and_time(date, time)
+				return date_time
 			end
 		else
 			# We return the bigger from the current time and the
 			# creation time plus start time
-			return [parse_date_and_time(date, time), @creation_time + VM_START_TIME].max
+			return [date_time, @creation_time + VM_START_TIME].max
 		end
 	end
 end
