@@ -14,12 +14,9 @@
 # License::   Apache License, Version 2.0
 
 # TODO list
-# * accounting the free VMs in every queue "statically" (not counting it
-#   when the function is called to get the value)
 # * The biggest spike in the near past should be stored some way to
 #   be able to dinamically compute the number of idle VMs needed at all
 #   times
-# * Optimize the code a LOT, because it's dead slow now :)
 
 ########################################################################
 ###################################### Constants #######################
@@ -28,6 +25,18 @@
 # This is the number of VMs in every queue we always want to run as
 # idle to handle possible incoming spikes
 FIX_NUMBER_OF_VMS = 5
+
+# This is the MINIMUM treshold of how many percent of the VMs MUST be
+# free at any given time in any given queue
+# (If there is LESS than that percent of VMs are free, then we START new
+# ones to be at least that many free VMs)
+MIN_IDLE_VM_PERCENT = 0.4
+
+# This is the MAXIMUM treshold of how many percent of the VMs CAN be
+# free at any given time in any given queue
+# (If there is MORE than that percent of VMs are free, then we STOP them
+# to be only that many free)
+MAX_IDLE_VM_PERCENT = 0.7
 
 # This is the time needed for a VM to start in seconds
 VM_START_TIME = 2 * 60
@@ -255,14 +264,14 @@ class QueueManager
 			end
 			# Now we start or stop VMs if it is necessary according the
 			# previously counted utilization 
-			$stderr.puts "There is #{free_vms_without_start_time}/#{real_free_vms}/#{@queues[job.queue].size} VMs free in #{job.queue} (before VM pool management)"
+#			$stderr.puts "There is #{free_vms_without_start_time}/#{real_free_vms}/#{@queues[job.queue].size} VMs free in #{job.queue} (before VM pool management)"
 			# First we stop VMs if the utiliziation is below a minimum
 			# treshold
-			if free_vms_without_start_time.to_f / @queues[job.queue].size > 0.7
+			if free_vms_without_start_time.to_f / @queues[job.queue].size > MAX_IDLE_VM_PERCENT
 				# Now we stop VMs to rise the utilization to the minimum
 				# treshold but we cannot have fewer VMs than the
 				# FIX_NUMBER_OF_VMS value
-				number_of_vms_to_stop = (free_vms_without_start_time - @queues[job.queue].size * 0.7).ceil
+				number_of_vms_to_stop = (free_vms_without_start_time - @queues[job.queue].size * MAX_IDLE_VM_PERCENT).ceil
 				if free_vms_without_start_time - number_of_vms_to_stop > FIX_NUMBER_OF_VMS
 					number_of_vms_to_stop.times do
 						stop_vm(job.date, job.time, job.queue)
@@ -281,13 +290,13 @@ class QueueManager
 			# The we check that if there is still fewer VMs are free
 			# then a minimum treshold of the full VM number then we
 			# start some to be at least that many free
-			if free_vms_without_start_time.to_f / @queues[job.queue].size < 0.3
-				(@queues[job.queue].size * 0.3 - free_vms_without_start_time).ceil.times do
+			if free_vms_without_start_time.to_f / @queues[job.queue].size < MIN_IDLE_VM_PERCENT
+				(@queues[job.queue].size * MIN_IDLE_VM_PERCENT - free_vms_without_start_time).ceil.times do
 					start_vm(job.date, job.time, job.queue)
 				end
 			end
 			if write_log
-				@@log_file.puts "#{job.date} #{job.time} #{job.queue} #{@queues[job.queue].length} #{real_free_vms} #{(@queues[job.queue].size * 0.3).to_i}"
+				@@log_file.puts "#{job.date} #{job.time} #{job.queue} #{@queues[job.queue].length} #{real_free_vms} #{(@queues[job.queue].size * MIN_IDLE_VM_PERCENT).to_i}"
 			end
 		else
 			raise "Job type was needed and got #{job.inspect}"
