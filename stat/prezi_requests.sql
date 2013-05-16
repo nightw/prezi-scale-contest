@@ -11,3 +11,4 @@ CREATE TABLE `requests` (
   KEY `queue` (`queue`),
   KEY `date` (`d`) USING BTREE
 ) ENGINE=InnoDB AUTO_INCREMENT=0 DEFAULT CHARSET=utf8;
+
