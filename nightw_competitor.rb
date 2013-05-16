@@ -217,31 +217,35 @@ class QueueManager
 	# It's input parameter is a Job object
 	def schedule_request(job, write_log=false, log_file=nil)
 		if job..kind_of?(Job)
+			# We set the initial states for the job scheduling and
+			# accounting
 			found = false
+			real_free_vms = free_vms_without_start_time = 0
+			# First we go over all the VMs in the given queue
 			@queues[job.queue].each do |vm|
-				if vm.free_date_time?(job.date_time)
-					job.start_time = job.date_time
+				# We get the time when that VM will be available
+				vm_free_at = vm.free_at_date_time(job.date_time)
+				# We determine from the previous result that the vm is
+				# free NOW or not and if it's free then we add it to the
+				# real_free_vms counter
+				if vm_free_at == job.date_time && found
+					real_free_vms += 1
+				end
+				# We also count the time when the VM will be available not
+				# counting the startup time (for scheduling purposes)
+				free_vms_without_start_time += 1 if vm.free_date_time?(job.date_time, true)
+				# Now we assign the current job to the first free VM (or
+				# the first VM which will be free in 5 secs)
+				if !found && vm_free_at < job.date_time + 5
+					job.start_time = vm_free_at
 					vm.job = job
 					found = true
-					break
 				end
 			end
-			# We did not found a currently free VM, so we try to "wait"
-			# for the 5 sec grace period
-			if !found
-				@queues[job.queue].each do |vm|
-					if vm.free_at_date_time(job.date_time) < job.date_time + 5
-						job.start_time = vm.free_at_date_time(job.date_time)
-						vm.job = job
-						found = true
-#						$stderr.puts "WARNING: job #{job.uid} sheduled into the future to: #{vm.free_at_date_time(job.date_time)}"
-						break
-					end
-				end
-			end
-			# We did not found any VM even with 5 secs "wait" and we're
-			# over the first 24 hours when there is no penalty for being 
-			# unable to schedule a job correctly
+			# We did not found any VM even with 5 secs "wait" so we
+			# check for being in the first 24 hours when there is no
+			# penalty for being unable to schedule a job correctly or
+			# we're over it
 			if !found
 				if job.date_time > @start_date_time + 24 * 60 * 60
 					raise "There was no available VM for the request: #{job.uid}"
@@ -249,22 +253,37 @@ class QueueManager
 #					$stderr.puts "WARNING: there is no free VM for job #{job.uid} at: #{job.date} #{job.time} (but we're in the first 24 hours)"
 				end
 			end
-			real_free_vms = free_vms_without_start_time = 0
-			@queues[job.queue].each do |vm|
-				free_vms_without_start_time += 1 if vm.free_date_time?(job.date_time, true)
-				real_free_vms += 1 if vm.free_date_time?(job.date_time)
-			end
-#			$stderr.puts "There is #{free_vms_without_start_time}/#{real_free_vms}/#{@queues[job.queue].size} VMs free in #{job.queue} (before VM pool management)"
-			if free_vms_without_start_time.to_f / @queues[job.queue].size < 0.3
-				# Now we start VMs to be at least 30 percent of free VMs
-				(@queues[job.queue].size * 0.3 - free_vms_without_start_time).to_i.times do
-					start_vm(job.date, job.time, job.queue)
+			# Now we start or stop VMs if it is necessary according the
+			# previously counted utilization 
+			$stderr.puts "There is #{free_vms_without_start_time}/#{real_free_vms}/#{@queues[job.queue].size} VMs free in #{job.queue} (before VM pool management)"
+			# First we stop VMs if the utiliziation is below a minimum
+			# treshold
+			if free_vms_without_start_time.to_f / @queues[job.queue].size > 0.7
+				# Now we stop VMs to rise the utilization to the minimum
+				# treshold but we cannot have fewer VMs than the
+				# FIX_NUMBER_OF_VMS value
+				number_of_vms_to_stop = (free_vms_without_start_time - @queues[job.queue].size * 0.7).ceil
+				if free_vms_without_start_time - number_of_vms_to_stop > FIX_NUMBER_OF_VMS
+					number_of_vms_to_stop.times do
+						stop_vm(job.date, job.time, job.queue)
+					end
 				end
 			end
-			if free_vms_without_start_time.to_f / @queues[job.queue].size > 0.7
-				# Now we stop VMs to rise the utilization to 30 percent
-				(free_vms_without_start_time - @queues[job.queue].size * 0.7).to_i.times do
-					stop_vm(job.date, job.time, job.queue)
+			# Second we check that if there is less then
+			# FIX_NUMBER_OF_VMS are free, then we raise the number of
+			# VMs to be at least that many
+			if FIX_NUMBER_OF_VMS - free_vms_without_start_time > 0
+				(FIX_NUMBER_OF_VMS - free_vms_without_start_time).times do
+					start_vm(job.date, job.time, job.queue)
+				end
+				free_vms_without_start_time = FIX_NUMBER_OF_VMS
+			end
+			# The we check that if there is still fewer VMs are free
+			# then a minimum treshold of the full VM number then we
+			# start some to be at least that many free
+			if free_vms_without_start_time.to_f / @queues[job.queue].size < 0.3
+				(@queues[job.queue].size * 0.3 - free_vms_without_start_time).ceil.times do
+					start_vm(job.date, job.time, job.queue)
 				end
 			end
 			if write_log
