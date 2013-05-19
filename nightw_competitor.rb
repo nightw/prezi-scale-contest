@@ -13,11 +13,6 @@
 # Copyright:: Copyright (c) 2013 Pal David Gergely
 # License::   Apache License, Version 2.0
 
-# TODO list
-# * The biggest spike in the near past should be stored some way to
-#   be able to dinamically compute the number of idle VMs needed at all
-#   times
-
 ########################################################################
 ###################################### Constants #######################
 ########################################################################
@@ -25,18 +20,6 @@
 # This is the number of VMs in every queue we always want to run as
 # idle to handle possible incoming spikes
 FIX_NUMBER_OF_VMS = 40
-
-# This is the MINIMUM treshold of how many percent of the VMs MUST be
-# free at any given time in any given queue
-# (If there is LESS than that percent of VMs are free, then we START new
-# ones to be at least that many free VMs)
-MIN_IDLE_VM_PERCENT = 0.4
-
-# This is the MAXIMUM treshold of how many percent of the VMs CAN be
-# free at any given time in any given queue
-# (If there is MORE than that percent of VMs are free, then we STOP them
-# to be only that many free)
-MAX_IDLE_VM_PERCENT = 0.7
 
 # This is the MINIMUM treshold of how many percent of the VMs MUST be
 # free at any given time in any given queue
@@ -168,37 +151,38 @@ class QueueManager
 	end
 	
 	# To stop a VM in a given queue
-	def stop_vm_date_time(date_time, queue, force_stop = false)
+	def stop_vm_date_time(date_time, queue, count)
 		# First sanity check
 		if QUEUES.include?(queue)
 			# We look for the VMs which has the least mintues left in the
 			# current hour
-			min_minutes_left_in_hour = 100
-			vm_to_stop = nil
-			# If there would be less VM than the FIX_NUMBER_OF_VMS after
-			# the stop then we do nothing
-			if @queues[queue].length - 1 <= FIX_NUMBER_OF_VMS
-				return
+			vms_to_stop = Hash.new
+			for i in 0..9
+				vms_to_stop[i] = Array.new
 			end
-			current_time_left = nil
+			# We check how many VMs we can stop before reacing the
+			# minimum (FIX_NUMBER_OF_VMS)
+			stoppable_vms_count = @queues[queue].length - FIX_NUMBER_OF_VMS
+			if stoppable_vms_count <= 0
+				return
+			elsif stoppable_vms_count < count
+				count = stoppable_vms_count
+			end
 			@queues[queue].each do |vm|
 				current_time_left = vm.time_left_in_hour_date_time(date_time)
-				if current_time_left < min_minutes_left_in_hour
-					min_minutes_left_in_hour = current_time_left
-					vm_to_stop = vm
+				if current_time_left < 10
+					vms_to_stop[current_time_left.to_i].push vm
 				end
 			end
-			if !vm_to_stop.nil?
-				if force_stop
-					vm_to_stop.stop(date_time.strftime("%Y-%m-%d"), date_time.strftime("%H:%M:%S"))
-					@queues[queue].delete(vm_to_stop)
-				else
-					# If we do not have to force stop then we won't stop
-					# a VM which has more than 5 mintes left in the hour
-					# because it's "cheaper" to leave it powered on
-					if current_time_left < 5
-						vm_to_stop.stop(date_time.strftime("%Y-%m-%d"), date_time.strftime("%H:%M:%S"))
-						@queues[queue].delete(vm_to_stop)
+			vms_stopped = 0
+			for i in 0..9
+				vms_to_stop[i].each do |vm|
+					vm.stop(date_time.strftime("%Y-%m-%d"), date_time.strftime("%H:%M:%S"))
+#					$stderr.puts "#{date_time.strftime('%Y-%m-%d')} #{date_time.strftime('%H:%M:%S')} stopped: #{vm.inspect}, count before: #{@queues[queue].size}"
+					@queues[queue].delete(vm)
+					vms_stopped += 1
+					if vms_stopped >= count
+						return
 					end
 				end
 			end
@@ -208,8 +192,8 @@ class QueueManager
 	end
 	
 	# To stop a VM in a given queue
-	def stop_vm(date, time, queue, force_stop = false)
-		stop_vm_date_time(parse_date_and_time(date, time), queue, force_stop)
+	def stop_vm(date, time, queue, count)
+		stop_vm_date_time(parse_date_and_time(date, time), queue, count)
 	end
 	
 	# To stop all the VMs in every queue
@@ -285,9 +269,7 @@ class QueueManager
 				# FIX_NUMBER_OF_VMS value
 				number_of_vms_to_stop = (free_vms_without_start_time - @queues[job.queue].size * MAX_IDLE_VM_PERCENT).ceil
 				if free_vms_without_start_time - number_of_vms_to_stop > FIX_NUMBER_OF_VMS
-					number_of_vms_to_stop.times do
-						stop_vm(job.date, job.time, job.queue)
-					end
+					stop_vm_date_time(job.date_time, job.queue, number_of_vms_to_stop)
 				end
 			end
 			# Second we check that if there is less then
