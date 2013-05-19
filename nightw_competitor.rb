@@ -24,7 +24,7 @@
 
 # This is the number of VMs in every queue we always want to run as
 # idle to handle possible incoming spikes
-FIX_NUMBER_OF_VMS = 5
+FIX_NUMBER_OF_VMS = 40
 
 # This is the MINIMUM treshold of how many percent of the VMs MUST be
 # free at any given time in any given queue
