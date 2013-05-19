@@ -38,6 +38,18 @@ MIN_IDLE_VM_PERCENT = 0.4
 # to be only that many free)
 MAX_IDLE_VM_PERCENT = 0.7
 
+# This is the MINIMUM treshold of how many percent of the VMs MUST be
+# free at any given time in any given queue
+# (If there is LESS than that percent of VMs are free, then we START new
+# ones to be at least that many free VMs)
+MIN_IDLE_VM_PERCENT = 0.4
+
+# This is the MAXIMUM treshold of how many percent of the VMs CAN be
+# free at any given time in any given queue
+# (If there is MORE than that percent of VMs are free, then we STOP them
+# to be only that many free)
+MAX_IDLE_VM_PERCENT = 0.7
+
 # This is the time needed for a VM to start in seconds
 VM_START_TIME = 2 * 60
 
